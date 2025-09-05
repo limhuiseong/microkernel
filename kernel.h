@@ -2,6 +2,10 @@
 
 #include "common.h"
 
+#define PROCS_MAX       8
+#define PROC_UNUSED    0
+#define PROC_RUNNABLE  1
+
 struct trap_frame {
     uint32_t ra;
     uint32_t gp;
@@ -54,6 +58,13 @@ struct trap_frame {
         printf("PANIC: %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__);   \
         while (1) {}                                                            \
     } while (0)
+
+struct process {
+    int pid;
+    int state;
+    vaddr_t sp;
+    uint8_t stack[8192];
+};
 
 struct sbiret {
     long error;
