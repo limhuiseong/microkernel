@@ -42,6 +42,12 @@ void putchar(char ch)
     sbi_call(ch, 0, 0, 0, 0, 0, 0, 1);
 }
 
+long getchar(void)
+{
+    struct sbiret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
+    return ret.error;
+}
+
 __attribute__((naked))
 __attribute__((aligned(4)))
 void kernel_entry(void) {
@@ -80,7 +86,10 @@ void kernel_entry(void) {
         "sw s11, 4 * 29(sp)\n"
 
         "csrr a0, sscratch\n"
-        "sw a0, 4 * 30(sp)\n"
+        "sw a0,  4 * 30(sp)\n"
+
+        "addi a0, sp, 4 * 31\n"
+        "csrw sscratch, a0\n"
 
         "mv a0, sp\n"
         "call handle_trap\n"
@@ -115,15 +124,8 @@ void kernel_entry(void) {
         "lw s9,  4 * 27(sp)\n"
         "lw s10, 4 * 28(sp)\n"
         "lw s11, 4 * 29(sp)\n"
-
-        "csrr a0, sscratch\n"
-        "sw a0, 4 * 30(sp)\n"
-
-        "addi a0, sp, 4 * 31\n"
-        "csrw sscratch, a0\n"
-
-        "mv a0, sp\n"
-        "call handle_trap\n"
+        "lw sp,  4 * 30(sp)\n"
+        "sret\n"
     );
 }
 
@@ -170,14 +172,6 @@ void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags)
     uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
     uint32_t *table0 = (uint32_t *)((table1[vpn1] >> 10) * PAGE_SIZE);
     table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
-}
-
-void handle_trap(struct trap_frame *f) {
-    uint32_t scause = READ_CSR(scause);
-    uint32_t stval = READ_CSR(stval);
-    uint32_t user_pc = READ_CSR(sepc);
-
-    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
 }
 
 __attribute__((naked))
@@ -327,6 +321,47 @@ void proc_b_entry(void)
     }
 }
 
+void handle_syscall(struct trap_frame *f) {
+    switch (f->a3) {
+        case SYS_PUTCHAR:
+            putchar(f->a0);
+            break;
+        case SYS_GETCHAR:
+            while (1) {
+                long ch = getchar();
+                if (ch >= 0) {
+                    f->a0 = ch;
+                    break;
+                }
+
+                yield();
+            }
+            break;
+        case SYS_EXIT:
+            printf("process %d exited\n", current_proc->pid);
+            current_proc->state = PROC_EXITED;
+            yield();
+            PANIC("unreachable");
+        default:
+            PANIC("unexpected syscall a3=%x\n", f->a3);
+    }
+}
+
+void handle_trap(struct trap_frame *f) {
+    uint32_t scause = READ_CSR(scause);
+    uint32_t stval = READ_CSR(stval);
+    uint32_t user_pc = READ_CSR(sepc);
+
+    if (scause == SCAUSE_ECALL) {
+        handle_syscall(f);
+        user_pc += 4;
+    } else {
+        PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
+    }
+
+    WRITE_CSR(sepc, user_pc);
+}
+
 void kernel_main(void)
 {
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
@@ -341,7 +376,7 @@ void kernel_main(void)
     create_process(_binary_shell_bin_start, (size_t)_binary_shell_bin_size);
 
     yield();
-    __asm__ __volatile__("wfi");
+    PANIC("switched to idle process");
 }
 
 __attribute__((section(".text.boot")))
